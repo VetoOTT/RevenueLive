@@ -58,11 +58,11 @@ class DatabaseUploadTest(unittest.TestCase):
         response = self.client.get(f'/api/uploads/{uid}/file')
         self.assertEqual(response.status_code, 200)
         rows = list(csv.reader(io.StringIO(response.data.decode('utf-8-sig'))))
-        self.assertEqual(rows, [HEADERS, ['2026-09-01','Example','100','20','1.23','0.00','1.23']])
+        self.assertEqual(rows, [HEADERS, ['2026-09-01','Example','100','20','1','0','1']])
         with closing(sqlite3.connect(self.db_file)) as db:
             name, data = db.execute('SELECT filename,rows_json FROM uploads WHERE id=?', (uid,)).fetchone()
             self.assertEqual(name, 'example.csv')
-            self.assertEqual(json.loads(data)[0]['ad'], 123)
+            self.assertEqual(json.loads(data)[0]['ad'], 100)
         self.assertFalse(self.app.config['UPLOAD_DIR'].exists())
 
     def test_archive_delete_restore_without_original_files(self):
@@ -75,7 +75,7 @@ class DatabaseUploadTest(unittest.TestCase):
         self.assertEqual(self.client.get(f'/api/uploads/{second}/file').status_code, 200)
         self.action(second, 'unarchive')
         self.action(second, 'delete')
-        self.assertEqual(self.client.get('/api/report').json['totals']['total'], 123)
+        self.assertEqual(self.client.get('/api/report').json['totals']['total'], 100)
         self.assertEqual(self.client.get(f'/api/uploads/{second}/file').status_code, 404)
         with closing(self.app.extensions['database'].connect()) as db:
             self.assertTrue(verify_audit_chain(db)[0])
@@ -99,7 +99,7 @@ class DatabaseUploadTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         download = self.client.get('/api/uploads/' + response.json['id'] + '/file')
         self.assertIn('report.csv', download.headers['Content-Disposition'])
-        self.assertIn('0.10,0.20,0.30', download.text)
+        self.assertIn('0,0,0', download.text)
 
     def test_backup_needs_no_original_upload_directory(self):
         self.preview()

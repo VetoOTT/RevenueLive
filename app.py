@@ -15,7 +15,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from flask import Flask, Request, g, jsonify, request, send_from_directory, redirect
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -27,6 +27,7 @@ from database import Database, INTEGRITY_ERRORS
 
 ROOT = Path(__file__).resolve().parent
 HEADERS = ['Date', 'Channel Name', 'Views', 'Ad Impressions', 'Ad Revenue', 'Sponsorship/Others', 'Total Revenue']
+LEGACY_HEADERS = ['Date', 'Channel Name', 'Views', 'Compaign/Ad Impression', 'Revenue', 'Sponsorship/Others', 'Total Ad Revenue']
 AUDIT_GENESIS = '0' * 64
 
 
@@ -52,6 +53,11 @@ class MemoryUploadRequest(Request):
     def _get_file_stream(self, total_content_length, content_type, filename=None, content_length=None):
         # Request size is bounded by MAX_CONTENT_LENGTH; avoid multipart disk spooling.
         return io.BytesIO()
+
+
+def export_revenue(paise):
+    # New uploads use whole rupees; preserve precision of historical records.
+    return str(paise // 100) if paise % 100 == 0 else format(Decimal(paise) / 100, '.2f')
 
 
 def parse_upload(content, suffix):
@@ -82,7 +88,12 @@ def parse_upload(content, suffix):
         rows = list(itertools.islice(csv.reader(io.StringIO(content.decode('utf-8-sig'))), 20002))
     else:
         raise InvalidData('Upload an XLS, XLSX or UTF-8 CSV file.')
-    if not rows or [str(x or '').strip() for x in rows[0]] != HEADERS:
+    def normalized_headers(values):
+        return [' '.join(str(value or '').split()).casefold() for value in values]
+
+    # The legacy workbook uses "Revenue" for ads and "Total Ad Revenue" for
+    # the combined amount. Accept that complete schema, not ambiguous aliases.
+    if not rows or normalized_headers(rows[0]) not in (normalized_headers(HEADERS), normalized_headers(LEGACY_HEADERS)):
         raise InvalidData('Columns must match: ' + ', '.join(HEADERS))
     if len(rows) > 20001:
         raise InvalidData('Maximum 20,000 data rows per upload.')
@@ -108,19 +119,26 @@ def parse_upload(content, suffix):
             raise InvalidData(f'Row {number}: duplicate date/channel inside the file.')
         seen.add(key)
         values = []
+        source_revenue = []
         for index, value in enumerate(row[2:], 2):
             try:
                 numeric = Decimal(str(value).strip())
                 if not numeric.is_finite() or numeric < 0 or numeric > Decimal('1000000000000'):
                     raise ValueError()
-                scaled = numeric * (100 if index >= 4 else 1)
-                if scaled != scaled.to_integral_value():
+                scaled = numeric.quantize(Decimal('1'), rounding=ROUND_HALF_UP) * 100 if index >= 4 else numeric
+                if index < 4 and scaled != scaled.to_integral_value():
                     raise ValueError()
                 values.append(int(scaled))
+                if index >= 4:
+                    source_revenue.append(numeric)
             except (InvalidOperation, ValueError):
-                raise InvalidData(f'Row {number}: {HEADERS[index]} must be non-negative; counts are integers and INR allows two decimals.')
-        if values[2] + values[3] != values[4]:
-            raise InvalidData(f'Row {number}: total revenue must equal ad revenue plus sponsorship/others.')
+                raise InvalidData(f'Row {number}: {HEADERS[index]} must be non-negative; counts must be integers and revenue is rounded to whole rupees.')
+        rounded_sum = int((source_revenue[0] + source_revenue[1]).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) * 100
+        if values[2] + values[3] != values[4] and rounded_sum != values[4]:
+            raise InvalidData(f'Row {number}: total revenue must equal ad revenue plus sponsorship/others after whole-rupee rounding.')
+        # Rounding a sum can differ from summing rounded components by one rupee.
+        # Keep the dashboard's component totals additive after normalization.
+        values[4] = values[2] + values[3]
         result.append(dict(day=date.isoformat(), channel=channel, views=values[0], impressions=values[1], ad=values[2], other=values[3], total=values[4]))
     if not result:
         raise InvalidData('No data rows found.')
@@ -461,7 +479,7 @@ def create_app(data_dir=None):
             channel=r['channel']
             if channel.startswith(('=','+','-','@')):
                 channel="'"+channel
-            writer.writerow([r['day'],channel,r['views'],r['impressions'],*[f'{r[k]/100:.2f}' for k in ('ad','other','total')]])
+            writer.writerow([r['day'],channel,r['views'],r['impressions'],*[export_revenue(r[k]) for k in ('ad','other','total')]])
         response=app.response_class('\ufeff'+buffer.getvalue(),mimetype='text/csv')
         response.headers['Content-Disposition']='attachment; filename=revenue.csv'
         return response
@@ -598,7 +616,7 @@ def create_app(data_dir=None):
             if channel.startswith(('=','+','-','@')):
                 channel="'"+channel
             writer.writerow([row['day'],channel,row['views'],row['impressions'],
-                             *[format(Decimal(row[key])/100,'.2f') for key in ('ad','other','total')]])
+                             *[export_revenue(row[key]) for key in ('ad','other','total')]])
         filename=Path(secure_filename(upload['filename']) or 'upload').stem+'.csv'
         response=app.response_class('\ufeff'+buffer.getvalue(),mimetype='text/csv')
         response.headers['Content-Disposition']=f'attachment; filename="{filename}"'

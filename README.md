@@ -61,13 +61,27 @@ after eight hours; passwords are hashed and writes require CSRF tokens.
 
 ## Uploads and persistence
 
-XLS/XLSX first sheet or UTF-8 CSV; exact columns:
+XLS/XLSX first sheet or UTF-8 CSV; columns in this order:
 `Date, Channel Name, Views, Ad Impressions, Ad Revenue, Sponsorship/Others, Total Revenue`.
-Use Excel dates or ISO `YYYY-MM-DD`; INR has at most two decimal places. Maximum
+The complete legacy header set is also accepted:
+`Date, Channel Name, Views, Compaign/Ad Impression, Revenue, Sponsorship/Others, Total Ad Revenue`.
+In that format, Revenue means ad revenue and Total Ad Revenue must equal
+Revenue plus Sponsorship/Others. Header case and whitespace are normalized;
+mixed or reordered schemas are rejected. Exports use the standard headers.
+Use Excel dates or ISO `YYYY-MM-DD`. Revenue imports round each amount to the
+nearest whole rupee (half up: 4.50 becomes 5); counts must already be integers.
+The supplied total must agree with either the rounded source sum or the sum of
+rounded components. Stored totals are calculated from rounded ad revenue plus
+rounded sponsorship so component totals remain additive. The preview shows
+these normalized whole-rupee values; inconsistent source totals remain errors.
+Maximum
 10 MB / 20,000 rows. Formula cells must have saved cached values. Zero is valid;
 blank metrics are rejected. Negative adjustments are not supported in this version.
 
-Revenue is stored as integer paise. Date/channel is unique. Preview is required;
+Revenue uses the existing integer-paise database/API scale for compatibility;
+new imports are multiples of 100 paise. Historical records are not rewritten.
+CSV exports omit decimal places for whole rupees and preserve historical fractions.
+Date/channel is unique. Preview is required;
 replacement requires confirmation. A change after preview aborts publication.
 Identical pending data (even in a different file format) and uploads that make no
 change to live data are rejected. Unchanged rows in a mixed file are not republished.
